@@ -4,7 +4,7 @@
 
 ## why
 
-using libsodium should be easy.
+libsodium should be easy.
 
 ## how
 
