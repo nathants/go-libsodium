@@ -63,7 +63,8 @@ func TestStreamRecipients(t *testing.T) {
 	}
 }
 
-func TestSeal(t *testing.T) {
+func TestBoxSeal(t *testing.T) {
+	Init()
 	value := []byte("hello world")
 	pk, sk, err := BoxKeypair()
 	if err != nil {
@@ -82,7 +83,8 @@ func TestSeal(t *testing.T) {
 	}
 }
 
-func TestEasy(t *testing.T) {
+func TestBoxEasy(t *testing.T) {
+	Init()
 	value := []byte("hello world")
 	pk1, sk1, err := BoxKeypair()
 	if err != nil {
@@ -106,6 +108,7 @@ func TestEasy(t *testing.T) {
 }
 
 func TestSign(t *testing.T) {
+	Init()
 	value := []byte("hello world")
 	pk, sk, err := SignKeypair()
 	if err != nil {
