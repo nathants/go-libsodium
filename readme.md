@@ -1,3 +1,5 @@
+[![Go Reference](https://pkg.go.dev/badge/github.com/nathants/go-libsodium.svg)](https://pkg.go.dev/github.com/nathants/go-libsodium)
+
 # go-libsodium
 
 ## why
