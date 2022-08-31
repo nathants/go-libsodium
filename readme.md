@@ -55,9 +55,10 @@ func SignVerify(signedText, plainText, signerPublicKey []byte) error
 ## install
 
 ```bash
-sudo apt-get install -y libsodium-dev # ubuntu/debian
-sudo apk add libsodium-dev            # alpine
-sudo pacman -S libsodium              # arch
+brew install         go     libsodium     # homebrew
+sudo pacman -S       go     libsodium     # arch
+sudo apk add         go     libsodium-dev # alpine
+sudo apt-get install golang libsodium-dev # ubuntu/debian
 ```
 
 ```bash
