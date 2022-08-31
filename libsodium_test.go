@@ -26,6 +26,18 @@ func TestStream(t *testing.T) {
 	if !bytes.Equal(value, plain.Bytes()) {
 		t.Fatal("fail")
 	}
+	bitflipCipher := append([]byte{}, cipher.Bytes()...)
+	bitflipCipher[len(bitflipCipher)/2]++
+	err = StreamDecrypt(key, bytes.NewReader(bitflipCipher), &plain)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
+	bitflipKey := append([]byte{}, key...)
+	bitflipKey[len(bitflipKey)/2]++
+	err = StreamDecrypt(bitflipKey, bytes.NewReader(cipher.Bytes()), &plain)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
 }
 
 func TestStreamRecipients(t *testing.T) {
@@ -61,6 +73,18 @@ func TestStreamRecipients(t *testing.T) {
 	if !bytes.Equal(value, plain.Bytes()) {
 		t.Fatal("sk2 failed")
 	}
+	bitflipCipher := append([]byte{}, cipher.Bytes()...)
+	bitflipCipher[len(bitflipCipher)/2]++
+	err = StreamDecryptRecipients(sk2, bytes.NewReader(bitflipCipher), &plain)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
+	bitflipKey := append([]byte{}, sk2...)
+	bitflipKey[len(bitflipKey)/2]++
+	err = StreamDecryptRecipients(bitflipKey, bytes.NewReader(cipher.Bytes()), &plain)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
 }
 
 func TestBoxSeal(t *testing.T) {
@@ -80,6 +104,18 @@ func TestBoxSeal(t *testing.T) {
 	}
 	if !bytes.Equal(value, plain) {
 		t.Fatal("sk failure")
+	}
+	bitflipCipher := append([]byte{}, cipher...)
+	bitflipCipher[len(bitflipCipher)/2]++
+	_, err = BoxSealedDecrypt(bitflipCipher, sk)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
+	bitflipKey := append([]byte{}, sk...)
+	bitflipKey[len(bitflipKey)/2]++
+	_, err = BoxSealedDecrypt(cipher, bitflipKey)
+	if err == nil {
+		t.Fatal("should have failed")
 	}
 }
 
@@ -105,6 +141,18 @@ func TestBoxEasy(t *testing.T) {
 	if !bytes.Equal(value, plain) {
 		t.Fatal("sk failure")
 	}
+	bitflipCipher := append([]byte{}, cipher...)
+	bitflipCipher[len(bitflipCipher)/2]++
+	_, err = BoxEasyDecrypt(bitflipCipher, pk1, sk2)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
+	bitflipKey := append([]byte{}, sk2...)
+	bitflipKey[len(bitflipKey)/2]++
+	_, err = BoxEasyDecrypt(cipher, pk1, bitflipKey)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
 }
 
 func TestSign(t *testing.T) {
@@ -121,5 +169,17 @@ func TestSign(t *testing.T) {
 	err = SignVerify(signature, value, pk)
 	if err != nil {
 		t.Fatal(err)
+	}
+	bitflipSignature := append([]byte{}, signature...)
+	bitflipSignature[len(bitflipSignature)/2]++
+	err = SignVerify(bitflipSignature, value, pk)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
+	bitflipKey := append([]byte{}, pk...)
+	bitflipKey[len(bitflipKey)/2]++
+	err = SignVerify(signature, value, bitflipKey)
+	if err == nil {
+		t.Fatal("should have failed")
 	}
 }
