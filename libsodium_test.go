@@ -40,6 +40,44 @@ func TestStream(t *testing.T) {
 	}
 }
 
+func TestStreamLarge(t *testing.T) {
+	StreamChunkSize = 1024 * 1024
+	Init()
+	key, err := StreamKeygen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := []byte("hello world")
+	for i := 0; i < 1024 * 1024 * 500; i++ {
+		value = append(value, ' ')
+	}
+	var cipher bytes.Buffer
+	err = StreamEncrypt(key, bytes.NewReader(value), &cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plain bytes.Buffer
+	err = StreamDecrypt(key, bytes.NewReader(cipher.Bytes()), &plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(value, plain.Bytes()) {
+		t.Fatal("fail")
+	}
+	bitflipCipher := append([]byte{}, cipher.Bytes()...)
+	bitflipCipher[len(bitflipCipher)/2]++
+	err = StreamDecrypt(key, bytes.NewReader(bitflipCipher), &plain)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
+	bitflipKey := append([]byte{}, key...)
+	bitflipKey[len(bitflipKey)/2]++
+	err = StreamDecrypt(bitflipKey, bytes.NewReader(cipher.Bytes()), &plain)
+	if err == nil {
+		t.Fatal("should have failed")
+	}
+}
+
 func TestStreamRecipients(t *testing.T) {
 	StreamChunkSize = 2
 	Init()

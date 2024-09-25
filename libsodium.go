@@ -21,6 +21,20 @@ var (
 	initDone        = false
 )
 
+func writeFull(w io.Writer, buf []byte) error {
+    total := 0
+    for total < len(buf) {
+        n, err := w.Write(buf[total:])
+        if err != nil {
+            return err
+        } else if n == 0 {
+			panic("zero byte write without error")
+		}
+        total += n
+    }
+    return nil
+}
+
 func Init() {
 	if initDone {
 		return
@@ -57,12 +71,9 @@ func StreamEncrypt(key []byte, plainText io.Reader, cipherText io.Writer) error 
 	if res != 0 {
 		return fmt.Errorf("stream init push failed: %d", res)
 	}
-	n, err := cipherText.Write(header)
+	err := writeFull(cipherText, header)
 	if err != nil {
 		return fmt.Errorf("failed to write header: %w", err)
-	}
-	if n != len(header) {
-		return fmt.Errorf("failed to write enough header bytes: %d != %d", n, len(header))
 	}
 	plainChunk := make([]byte, StreamChunkSize)
 	for {
@@ -86,24 +97,21 @@ func StreamEncrypt(key []byte, plainText io.Reader, cipherText io.Writer) error 
 			(C.ulonglong)(0),
 			(C.uchar)(tag),
 		))
+		if cipherChunkSize != uint64(C.crypto_secretstream_xchacha20poly1305_ABYTES + plainChunkSize) {
+			panic("invalid push")
+		}
 		if res != 0 {
 			return fmt.Errorf("stream push failed: %d", res)
 		}
 		size := make([]byte, 4)
 		binary.LittleEndian.PutUint32(size, uint32(cipherChunkSize))
-		n, err = cipherText.Write(size)
+		err = writeFull(cipherText, size)
 		if err != nil {
 			return fmt.Errorf("failed to write cipher text length: %w", err)
 		}
-		if n != len(size) {
-			return fmt.Errorf("failed to write enough bytes for cipher text length: %d != %d", n, len(size))
-		}
-		n, err = cipherText.Write(cipherChunk)
+		err = writeFull(cipherText, cipherChunk)
 		if err != nil {
 			return fmt.Errorf("failed to write cipher text: %w", err)
-		}
-		if n != len(cipherChunk) {
-			return fmt.Errorf("failed to write enough bytes for cipher text: %d != %d", n, len(cipherChunk))
 		}
 		if tag != 0 {
 			return nil
@@ -120,12 +128,9 @@ func StreamDecrypt(key []byte, cipherText io.Reader, plainText io.Writer) error 
 	}
 	var state C.crypto_secretstream_xchacha20poly1305_state
 	header := make([]byte, int(C.crypto_secretstream_xchacha20poly1305_HEADERBYTES))
-	n, err := cipherText.Read(header)
+	_, err := io.ReadFull(cipherText, header)
 	if err != nil {
 		return fmt.Errorf("failed to read header: %w", err)
-	}
-	if n != len(header) {
-		return fmt.Errorf("failed to read enough bytes for header: %d != %d", n, len(header))
 	}
 	res := int(C.crypto_secretstream_xchacha20poly1305_init_pull(
 		&state,
@@ -137,19 +142,13 @@ func StreamDecrypt(key []byte, cipherText io.Reader, plainText io.Writer) error 
 	}
 	for {
 		size := make([]byte, 4)
-		n, err := cipherText.Read(size)
-		if n != len(size) {
-			return fmt.Errorf("failed to read enough bytes for cipher text length: %d != %d", n, len(size))
-		}
+		_, err := io.ReadFull(cipherText, size)
 		if err != nil {
 			return fmt.Errorf("failed to read cipher text length: %w", err)
 		}
 		cipherChunkSize := binary.LittleEndian.Uint32(size)
 		cipherChunk := make([]byte, cipherChunkSize)
-		n, err = cipherText.Read(cipherChunk)
-		if n != len(cipherChunk) {
-			return fmt.Errorf("failed to read enough bytes for cipher text: %d != %d", n, len(cipherChunk))
-		}
+		_, err = io.ReadFull(cipherText, cipherChunk)
 		if err != nil {
 			return fmt.Errorf("failed to read cipher text: %w", err)
 		}
@@ -173,12 +172,12 @@ func StreamDecrypt(key []byte, cipherText io.Reader, plainText io.Writer) error 
 		if res != 0 {
 			return fmt.Errorf("stream pull failed: %d", res)
 		}
-		n, err = plainText.Write(plainChunk)
+		if plainChunkSize != uint64(cipherChunkSize - uint32(C.crypto_secretstream_xchacha20poly1305_ABYTES)) {
+			panic("invalid pull")
+		}
+		err = writeFull(plainText, plainChunk)
 		if err != nil {
 			return fmt.Errorf("failed to write plain text: %w", err)
-		}
-		if n != len(plainChunk) {
-			return fmt.Errorf("failed to write enough bytes for plain text: %d != %d", n, len(plainChunk))
 		}
 		if tag == C.crypto_secretstream_xchacha20poly1305_TAG_FINAL {
 			return nil
@@ -194,12 +193,9 @@ func StreamEncryptRecipients(publicKeys [][]byte, plainText io.Reader, cipherTex
 	}
 	size := make([]byte, 4)
 	binary.LittleEndian.PutUint32(size, uint32(len(publicKeys)))
-	n, err := cipherText.Write(size)
+	err := writeFull(cipherText, size)
 	if err != nil {
-		panic(err)
-	}
-	if n != len(size) {
-		panic(fmt.Sprintf("%d != %d", n, len(size)))
+		return err
 	}
 	key, err := StreamKeygen()
 	if err != nil {
@@ -214,19 +210,13 @@ func StreamEncryptRecipients(publicKeys [][]byte, plainText io.Reader, cipherTex
 		keyCipherText = append(publicKeyHash[:], keyCipherText...)
 		size := make([]byte, 4)
 		binary.LittleEndian.PutUint32(size, uint32(len(keyCipherText)))
-		n, err := cipherText.Write(size)
+		err = writeFull(cipherText, size)
 		if err != nil {
 			return fmt.Errorf("failed to write cipher text length: %w", err)
 		}
-		if n != len(size) {
-			return fmt.Errorf("failed to write enough bytes for cipher text length: %d != %d", n, len(size))
-		}
-		n, err = cipherText.Write(keyCipherText)
+		err = writeFull(cipherText, keyCipherText)
 		if err != nil {
 			return fmt.Errorf("failed to write cipher text: %w", err)
-		}
-		if n != len(keyCipherText) {
-			return fmt.Errorf("failed to write enough bytes for cipher text: %d != %d", n, len(keyCipherText))
 		}
 	}
 	return StreamEncrypt(key, plainText, cipherText)
@@ -237,10 +227,7 @@ func StreamDecryptRecipients(secretKey []byte, cipherText io.Reader, plainText i
 		return fmt.Errorf("secretkey bad length: %d != %d", len(secretKey), C.crypto_box_SECRETKEYBYTES)
 	}
 	size := make([]byte, 4)
-	n, err := cipherText.Read(size)
-	if n != len(size) {
-		return fmt.Errorf("failed to read enough bytes for num recipients: %d != %d", n, len(size))
-	}
+	_, err := io.ReadFull(cipherText, size)
 	if err != nil {
 		return fmt.Errorf("failed to read num recipients: %w", err)
 	}
@@ -256,21 +243,15 @@ func StreamDecryptRecipients(secretKey []byte, cipherText io.Reader, plainText i
 	var key []byte
 	for i := 0; i < int(numRecipients); i++ {
 		size := make([]byte, 4)
-		n, err := cipherText.Read(size)
-		if n != len(size) {
-			return fmt.Errorf("failed to read enough bytes for cipher text length: %d != %d", n, len(size))
-		}
+		_, err := io.ReadFull(cipherText, size)
 		if err != nil {
 			return fmt.Errorf("failed to read bytes for cipher text length: %w", err)
 		}
 		keyCipherTextSize := binary.LittleEndian.Uint32(size)
 		keyCipherText := make([]byte, keyCipherTextSize)
-		n, err = cipherText.Read(keyCipherText)
+		_, err = io.ReadFull(cipherText, keyCipherText)
 		if err != nil {
 			return fmt.Errorf("failed to read bytes for cipher text: %w", err)
-		}
-		if n != len(keyCipherText) {
-			return fmt.Errorf("failed to read enough bytes for cipher text: %d != %d", n, len(keyCipherText))
 		}
 		publicKeyHash := blake2b.Sum512(publicKey)
 		recipientPublicKeyHash := keyCipherText[:len(publicKeyHash)]
