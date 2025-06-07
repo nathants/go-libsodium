@@ -1,14 +1,14 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/nathants/go-libsodium.svg)](https://pkg.go.dev/github.com/nathants/go-libsodium)
 
-# go-libsodium
+# Go-Libsodium
 
-## why
+## Why
 
-libsodium should be easy.
+Libsodium should be easy.
 
-## how
+## How
 
-a minimal cgo interface to the following libsodium constructs:
+A minimal cgo interface to the following Libsodium constructs:
 
 - [crypt_box_easy](https://doc.libsodium.org/secret-key_cryptography/secretbox)
 
@@ -18,7 +18,7 @@ a minimal cgo interface to the following libsodium constructs:
 
 - [crypto_stream](https://doc.libsodium.org/secret-key_cryptography/secretstream)
 
-## what
+## What
 
 ```go
 
@@ -52,7 +52,7 @@ func SignVerify(signedText, plainText, signerPublicKey []byte) error
 
 ```
 
-## install
+## Install
 
 ```bash
 brew install         go     libsodium     # homebrew
@@ -65,7 +65,7 @@ sudo apt-get install golang libsodium-dev # ubuntu/debian
 go get github.com/nathants/go-libsodium
 ```
 
-## usage
+## Usage
 
 ```go
 package main
