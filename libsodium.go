@@ -16,23 +16,35 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
+const (
+	maxStreamChunkSize  = 64 * 1024 * 1024
+	maxStreamRecipients = 1 << 16
+)
+
 var (
 	StreamChunkSize = 1024 * 1024
 	initDone        = false
 )
 
+func validateStreamChunkSize(chunkSize int) error {
+	if chunkSize <= 0 || chunkSize > maxStreamChunkSize {
+		return fmt.Errorf("bad stream chunk size: %d not in [1, %d]", chunkSize, maxStreamChunkSize)
+	}
+	return nil
+}
+
 func writeFull(w io.Writer, buf []byte) error {
-    total := 0
-    for total < len(buf) {
-        n, err := w.Write(buf[total:])
-        if err != nil {
-            return err
-        } else if n == 0 {
+	total := 0
+	for total < len(buf) {
+		n, err := w.Write(buf[total:])
+		if err != nil {
+			return err
+		} else if n == 0 {
 			panic("zero byte write without error")
 		}
-        total += n
-    }
-    return nil
+		total += n
+	}
+	return nil
 }
 
 func Init() {
@@ -54,13 +66,28 @@ func StreamKeygen() (key []byte, err error) {
 	return key, nil
 }
 
-func StreamEncrypt(key []byte, plainText io.Reader, cipherText io.Writer) error {
+func validateStreamEncrypt(key []byte, chunkSize int) (int, error) {
 	if !initDone {
-		return fmt.Errorf("forgot to init sodium")
+		return 0, fmt.Errorf("forgot to init sodium")
 	}
 	if len(key) != C.crypto_secretstream_xchacha20poly1305_KEYBYTES {
-		return fmt.Errorf("secretkey bad length: %d != %d", len(key), C.crypto_secretstream_xchacha20poly1305_KEYBYTES)
+		return 0, fmt.Errorf("secretkey bad length: %d != %d", len(key), C.crypto_secretstream_xchacha20poly1305_KEYBYTES)
 	}
+	if err := validateStreamChunkSize(chunkSize); err != nil {
+		return 0, err
+	}
+	return chunkSize, nil
+}
+
+func StreamEncrypt(key []byte, plainText io.Reader, cipherText io.Writer) error {
+	streamChunkSize, err := validateStreamEncrypt(key, StreamChunkSize)
+	if err != nil {
+		return err
+	}
+	return streamEncrypt(key, streamChunkSize, plainText, cipherText)
+}
+
+func streamEncrypt(key []byte, streamChunkSize int, plainText io.Reader, cipherText io.Writer) error {
 	header := make([]byte, int(C.crypto_secretstream_xchacha20poly1305_HEADERBYTES))
 	var state C.crypto_secretstream_xchacha20poly1305_state
 	res := int(C.crypto_secretstream_xchacha20poly1305_init_push(
@@ -75,7 +102,7 @@ func StreamEncrypt(key []byte, plainText io.Reader, cipherText io.Writer) error 
 	if err != nil {
 		return fmt.Errorf("failed to write header: %w", err)
 	}
-	plainChunk := make([]byte, StreamChunkSize)
+	plainChunk := make([]byte, streamChunkSize)
 	for {
 		plainChunkSize, err := plainText.Read(plainChunk)
 		tag := 0
@@ -97,7 +124,7 @@ func StreamEncrypt(key []byte, plainText io.Reader, cipherText io.Writer) error 
 			(C.ulonglong)(0),
 			(C.uchar)(tag),
 		))
-		if cipherChunkSize != uint64(C.crypto_secretstream_xchacha20poly1305_ABYTES + plainChunkSize) {
+		if cipherChunkSize != uint64(C.crypto_secretstream_xchacha20poly1305_ABYTES+plainChunkSize) {
 			panic("invalid push")
 		}
 		if res != 0 {
@@ -147,13 +174,18 @@ func StreamDecrypt(key []byte, cipherText io.Reader, plainText io.Writer) error 
 			return fmt.Errorf("failed to read cipher text length: %w", err)
 		}
 		cipherChunkSize := binary.LittleEndian.Uint32(size)
-		cipherChunk := make([]byte, cipherChunkSize)
+		minCipherChunkSize := uint32(C.crypto_secretstream_xchacha20poly1305_ABYTES)
+		maxCipherChunkSize := minCipherChunkSize + uint32(maxStreamChunkSize)
+		if cipherChunkSize < minCipherChunkSize || cipherChunkSize > maxCipherChunkSize {
+			return fmt.Errorf("bad stream cipher text chunk length: %d not in [%d, %d]", cipherChunkSize, minCipherChunkSize, maxCipherChunkSize)
+		}
+		cipherChunk := make([]byte, int(cipherChunkSize))
 		_, err = io.ReadFull(cipherText, cipherChunk)
 		if err != nil {
 			return fmt.Errorf("failed to read cipher text: %w", err)
 		}
-		plainChunkSize := uint64(cipherChunkSize - uint32(C.crypto_secretstream_xchacha20poly1305_ABYTES))
-		plainChunk := make([]byte, plainChunkSize)
+		plainChunkSize := uint64(cipherChunkSize - minCipherChunkSize)
+		plainChunk := make([]byte, int(plainChunkSize))
 		var tag C.uchar
 		var plainChunkPointer *C.uchar
 		if plainChunkSize > 0 {
@@ -172,7 +204,7 @@ func StreamDecrypt(key []byte, cipherText io.Reader, plainText io.Writer) error 
 		if res != 0 {
 			return fmt.Errorf("stream pull failed: %d", res)
 		}
-		if plainChunkSize != uint64(cipherChunkSize - uint32(C.crypto_secretstream_xchacha20poly1305_ABYTES)) {
+		if plainChunkSize != uint64(cipherChunkSize-minCipherChunkSize) {
 			panic("invalid pull")
 		}
 		err = writeFull(plainText, plainChunk)
@@ -186,18 +218,15 @@ func StreamDecrypt(key []byte, cipherText io.Reader, plainText io.Writer) error 
 }
 
 func StreamEncryptRecipients(publicKeys [][]byte, plainText io.Reader, cipherText io.Writer) error {
-	for _, publicKey := range publicKeys {
-		if len(publicKey) != C.crypto_box_PUBLICKEYBYTES {
-			return fmt.Errorf("publickey bad length: %d != %d", len(publicKey), C.crypto_box_PUBLICKEYBYTES)
-		}
-	}
-	size := make([]byte, 4)
-	binary.LittleEndian.PutUint32(size, uint32(len(publicKeys)))
-	err := writeFull(cipherText, size)
+	streamChunkSize, err := validateStreamEncryptRecipients(publicKeys, StreamChunkSize)
 	if err != nil {
 		return err
 	}
-	key, err := StreamKeygen()
+	key := make([]byte, C.crypto_secretstream_xchacha20poly1305_KEYBYTES)
+	C.crypto_secretstream_xchacha20poly1305_keygen((*C.uchar)(&key[0]))
+	size := make([]byte, 4)
+	binary.LittleEndian.PutUint32(size, uint32(len(publicKeys)))
+	err = writeFull(cipherText, size)
 	if err != nil {
 		return err
 	}
@@ -219,10 +248,31 @@ func StreamEncryptRecipients(publicKeys [][]byte, plainText io.Reader, cipherTex
 			return fmt.Errorf("failed to write cipher text: %w", err)
 		}
 	}
-	return StreamEncrypt(key, plainText, cipherText)
+	return streamEncrypt(key, streamChunkSize, plainText, cipherText)
+}
+
+func validateStreamEncryptRecipients(publicKeys [][]byte, chunkSize int) (int, error) {
+	if !initDone {
+		return 0, fmt.Errorf("forgot to init sodium")
+	}
+	if len(publicKeys) == 0 || len(publicKeys) > maxStreamRecipients {
+		return 0, fmt.Errorf("bad stream recipient count: %d not in [1, %d]", len(publicKeys), maxStreamRecipients)
+	}
+	for _, publicKey := range publicKeys {
+		if len(publicKey) != C.crypto_box_PUBLICKEYBYTES {
+			return 0, fmt.Errorf("publickey bad length: %d != %d", len(publicKey), C.crypto_box_PUBLICKEYBYTES)
+		}
+	}
+	if err := validateStreamChunkSize(chunkSize); err != nil {
+		return 0, err
+	}
+	return chunkSize, nil
 }
 
 func StreamDecryptRecipients(secretKey []byte, cipherText io.Reader, plainText io.Writer) error {
+	if !initDone {
+		return fmt.Errorf("forgot to init sodium")
+	}
 	if len(secretKey) != C.crypto_box_SECRETKEYBYTES {
 		return fmt.Errorf("secretkey bad length: %d != %d", len(secretKey), C.crypto_box_SECRETKEYBYTES)
 	}
@@ -230,6 +280,10 @@ func StreamDecryptRecipients(secretKey []byte, cipherText io.Reader, plainText i
 	_, err := io.ReadFull(cipherText, size)
 	if err != nil {
 		return fmt.Errorf("failed to read num recipients: %w", err)
+	}
+	numRecipients := binary.LittleEndian.Uint32(size)
+	if numRecipients == 0 || numRecipients > maxStreamRecipients {
+		return fmt.Errorf("bad stream recipient count: %d not in [1, %d]", numRecipients, maxStreamRecipients)
 	}
 	publicKey := make([]byte, len(secretKey))
 	res := int(C.crypto_scalarmult_base(
@@ -239,7 +293,8 @@ func StreamDecryptRecipients(secretKey []byte, cipherText io.Reader, plainText i
 	if res != 0 {
 		return fmt.Errorf("failed to derive publickey from secretkey: %d", res)
 	}
-	numRecipients := binary.LittleEndian.Uint32(size)
+	publicKeyHash := blake2b.Sum512(publicKey)
+	expectedRecipientRecordSize := uint32(len(publicKeyHash)) + uint32(C.crypto_box_SEALBYTES) + uint32(C.crypto_secretstream_xchacha20poly1305_KEYBYTES)
 	var key []byte
 	for i := 0; i < int(numRecipients); i++ {
 		size := make([]byte, 4)
@@ -248,12 +303,14 @@ func StreamDecryptRecipients(secretKey []byte, cipherText io.Reader, plainText i
 			return fmt.Errorf("failed to read bytes for cipher text length: %w", err)
 		}
 		keyCipherTextSize := binary.LittleEndian.Uint32(size)
+		if keyCipherTextSize != expectedRecipientRecordSize {
+			return fmt.Errorf("bad stream recipient record length: %d != %d", keyCipherTextSize, expectedRecipientRecordSize)
+		}
 		keyCipherText := make([]byte, keyCipherTextSize)
 		_, err = io.ReadFull(cipherText, keyCipherText)
 		if err != nil {
 			return fmt.Errorf("failed to read bytes for cipher text: %w", err)
 		}
-		publicKeyHash := blake2b.Sum512(publicKey)
 		recipientPublicKeyHash := keyCipherText[:len(publicKeyHash)]
 		keyCipherText = keyCipherText[len(publicKeyHash):]
 		if bytes.Equal(publicKeyHash[:], recipientPublicKeyHash) {
@@ -291,9 +348,13 @@ func BoxSealedEncrypt(plainText, recipientPublicKey []byte) (cipherText []byte, 
 	}
 	cipherTextLen := int(C.crypto_box_SEALBYTES) + len(plainText)
 	cipherText = make([]byte, cipherTextLen)
+	var plainTextPointer *C.uchar
+	if len(plainText) > 0 {
+		plainTextPointer = (*C.uchar)(&plainText[0])
+	}
 	res := int(C.crypto_box_seal(
 		(*C.uchar)(&cipherText[0]),
-		(*C.uchar)(&plainText[0]),
+		plainTextPointer,
 		(C.ulonglong)(len(plainText)),
 		(*C.uchar)(&recipientPublicKey[0]),
 	))
@@ -310,6 +371,9 @@ func BoxSealedDecrypt(cipherText, recipientSecretKey []byte) (plainText []byte, 
 	if len(recipientSecretKey) != C.crypto_box_SECRETKEYBYTES {
 		return nil, fmt.Errorf("secret key bad length: %d != %d", len(recipientSecretKey), C.crypto_box_SECRETKEYBYTES)
 	}
+	if len(cipherText) < int(C.crypto_box_SEALBYTES) {
+		return nil, fmt.Errorf("cipher text bad length: %d < %d", len(cipherText), C.crypto_box_SEALBYTES)
+	}
 	publicKey := make([]byte, len(recipientSecretKey))
 	res := int(C.crypto_scalarmult_base(
 		(*C.uchar)(&publicKey[0]),
@@ -320,8 +384,12 @@ func BoxSealedDecrypt(cipherText, recipientSecretKey []byte) (plainText []byte, 
 	}
 	plainTextLen := len(cipherText) - int(C.crypto_box_SEALBYTES)
 	plainText = make([]byte, plainTextLen)
+	plainTextForC := plainText
+	if len(plainTextForC) == 0 {
+		plainTextForC = make([]byte, 1)
+	}
 	res = int(C.crypto_box_seal_open(
-		(*C.uchar)(&plainText[0]),
+		(*C.uchar)(&plainTextForC[0]),
 		(*C.uchar)(&cipherText[0]),
 		(C.ulonglong)(len(cipherText)),
 		(*C.uchar)(&publicKey[0]),
@@ -349,9 +417,13 @@ func BoxEasyEncrypt(plainText, recipientPublicKey, senderSecretKey []byte) (ciph
 		unsafe.Pointer(&cipherText[0]),
 		C.crypto_box_NONCEBYTES,
 	)
+	var plainTextPointer *C.uchar
+	if len(plainText) > 0 {
+		plainTextPointer = (*C.uchar)(&plainText[0])
+	}
 	res := int(C.crypto_box_easy(
 		(*C.uchar)(&cipherText[int(C.crypto_box_NONCEBYTES)]),
-		(*C.uchar)(&plainText[0]),
+		plainTextPointer,
 		(C.ulonglong)(len(plainText)),
 		(*C.uchar)(&cipherText[0]),
 		(*C.uchar)(&recipientPublicKey[0]),
@@ -373,10 +445,18 @@ func BoxEasyDecrypt(cipherText, senderPublicKey, recipientSecretKey []byte) (pla
 	if len(recipientSecretKey) != C.crypto_box_SECRETKEYBYTES {
 		return nil, fmt.Errorf("secret key bad length: %d != %d", len(recipientSecretKey), C.crypto_box_SECRETKEYBYTES)
 	}
-	plainTextLen := len(cipherText) - int(C.crypto_box_MACBYTES) - int(C.crypto_box_NONCEBYTES)
+	minCipherTextLen := int(C.crypto_box_MACBYTES) + int(C.crypto_box_NONCEBYTES)
+	if len(cipherText) < minCipherTextLen {
+		return nil, fmt.Errorf("cipher text bad length: %d < %d", len(cipherText), minCipherTextLen)
+	}
+	plainTextLen := len(cipherText) - minCipherTextLen
 	plainText = make([]byte, plainTextLen)
+	plainTextForC := plainText
+	if len(plainTextForC) == 0 {
+		plainTextForC = make([]byte, 1)
+	}
 	res := int(C.crypto_box_open_easy(
-		(*C.uchar)(&plainText[0]),
+		(*C.uchar)(&plainTextForC[0]),
 		(*C.uchar)(&cipherText[int(C.crypto_box_NONCEBYTES)]),
 		(C.ulonglong)(len(cipherText[int(C.crypto_box_NONCEBYTES):])),
 		(*C.uchar)(&cipherText[0]),
@@ -411,10 +491,14 @@ func Sign(plainText, signerSecretKey []byte) (signedText []byte, err error) {
 	}
 	signedTextLen := uint64(int(C.crypto_sign_BYTES) + len(plainText))
 	signedText = make([]byte, signedTextLen)
+	var plainTextPointer *C.uchar
+	if len(plainText) > 0 {
+		plainTextPointer = (*C.uchar)(&plainText[0])
+	}
 	res := int(C.crypto_sign(
 		(*C.uchar)(&signedText[0]),
 		(*C.ulonglong)(&signedTextLen),
-		(*C.uchar)(&plainText[0]),
+		plainTextPointer,
 		(C.ulonglong)(len(plainText)),
 		(*C.uchar)(&signerSecretKey[0]),
 	))
@@ -431,17 +515,35 @@ func SignVerify(signedText, plainText, signerPublicKey []byte) error {
 	if len(signerPublicKey) != C.crypto_sign_PUBLICKEYBYTES {
 		return fmt.Errorf("public key bad length: %d != %d", len(signerPublicKey), C.crypto_sign_PUBLICKEYBYTES)
 	}
-	plainTextLen := uint64(len(plainText))
-	signatureTextLen := uint64(len(signedText))
+	if len(signedText) < int(C.crypto_sign_BYTES) {
+		return fmt.Errorf("signed text bad length: %d < %d", len(signedText), C.crypto_sign_BYTES)
+	}
+	expectedPlainTextLen := len(signedText) - int(C.crypto_sign_BYTES)
+	if expectedPlainTextLen != len(plainText) {
+		return fmt.Errorf("sign verify failed: plaintext length mismatch")
+	}
+	openedPlainText := make([]byte, expectedPlainTextLen)
+	if len(openedPlainText) == 0 {
+		openedPlainText = make([]byte, 1)
+	}
+	openedPlainTextLen := uint64(0)
+	signedTextLen := uint64(len(signedText))
 	res := int(C.crypto_sign_open(
-		(*C.uchar)(&plainText[0]),
-		(*C.ulonglong)(&plainTextLen),
+		(*C.uchar)(&openedPlainText[0]),
+		(*C.ulonglong)(&openedPlainTextLen),
 		(*C.uchar)(&signedText[0]),
-		(C.ulonglong)(signatureTextLen),
+		(C.ulonglong)(signedTextLen),
 		(*C.uchar)(&signerPublicKey[0]),
 	))
 	if res != 0 {
 		return fmt.Errorf("sign verify failed: %d", res)
+	}
+	if openedPlainTextLen != uint64(expectedPlainTextLen) {
+		return fmt.Errorf("sign verify failed: opened plaintext length %d != %d", openedPlainTextLen, expectedPlainTextLen)
+	}
+	openedPlainText = openedPlainText[:expectedPlainTextLen]
+	if !bytes.Equal(openedPlainText, plainText) {
+		return fmt.Errorf("sign verify failed: plaintext mismatch")
 	}
 	return nil
 }
