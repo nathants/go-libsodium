@@ -222,39 +222,49 @@ func TestStreamEncryptRejectsInvalidChunkSize(t *testing.T) {
 }
 
 func TestStreamLarge(t *testing.T) {
-	StreamChunkSize = 1024 * 1024
+	const chunkSize = 1024 * 1024
+	oldChunkSize := StreamChunkSize
+	StreamChunkSize = chunkSize
+	defer func() { StreamChunkSize = oldChunkSize }()
+
 	Init()
 	key, err := StreamKeygen()
 	if err != nil {
 		t.Fatal(err)
 	}
-	value := []byte("hello world")
-	for i := 0; i < 1024*1024*500; i++ {
-		value = append(value, ' ')
+
+	// One byte beyond a full production-sized chunk exercises both full and
+	// partial chunks without turning this boundary test into a stress test.
+	value := make([]byte, chunkSize+1)
+	for i := range value {
+		value[i] = byte(i)
 	}
+
 	var cipher bytes.Buffer
-	err = StreamEncrypt(key, bytes.NewReader(value), &cipher)
-	if err != nil {
+	if err := StreamEncrypt(key, bytes.NewReader(value), &cipher); err != nil {
 		t.Fatal(err)
 	}
 	var plain bytes.Buffer
-	err = StreamDecrypt(key, bytes.NewReader(cipher.Bytes()), &plain)
-	if err != nil {
+	if err := StreamDecrypt(key, bytes.NewReader(cipher.Bytes()), &plain); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(value, plain.Bytes()) {
 		t.Fatal("fail")
 	}
-	bitflipCipher := append([]byte{}, cipher.Bytes()...)
-	bitflipCipher[len(bitflipCipher)/2]++
-	err = StreamDecrypt(key, bytes.NewReader(bitflipCipher), &plain)
+	plain = bytes.Buffer{}
+
+	cipherBytes := cipher.Bytes()
+	bitflipIndex := len(cipherBytes) / 2
+	cipherBytes[bitflipIndex] ^= 1
+	err = StreamDecrypt(key, bytes.NewReader(cipherBytes), io.Discard)
+	cipherBytes[bitflipIndex] ^= 1
 	if err == nil {
 		t.Fatal("should have failed")
 	}
-	bitflipKey := append([]byte{}, key...)
-	bitflipKey[len(bitflipKey)/2]++
-	err = StreamDecrypt(bitflipKey, bytes.NewReader(cipher.Bytes()), &plain)
-	if err == nil {
+
+	bitflipKey := append([]byte(nil), key...)
+	bitflipKey[len(bitflipKey)/2] ^= 1
+	if err := StreamDecrypt(bitflipKey, bytes.NewReader(cipherBytes), io.Discard); err == nil {
 		t.Fatal("should have failed")
 	}
 }
