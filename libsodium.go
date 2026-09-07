@@ -269,12 +269,58 @@ func validateStreamEncryptRecipients(publicKeys [][]byte, chunkSize int) (int, e
 	return chunkSize, nil
 }
 
-func StreamDecryptRecipients(secretKey []byte, cipherText io.Reader, plainText io.Writer) error {
-	if !initDone {
-		return fmt.Errorf("forgot to init sodium")
+// Keyring routes each recipient header to a retained secret without retrying or
+// buffering ciphertext. Construct it once per operation and do not mutate it.
+type Keyring struct{ keys map[[64]byte][]byte }
+
+func NewKeyring(secretKeys [][]byte) (*Keyring, error) {
+	if len(secretKeys) == 0 || len(secretKeys) > MaxChainKeys {
+		return nil, fmt.Errorf("invalid secret key count")
 	}
-	if len(secretKey) != C.crypto_box_SECRETKEYBYTES {
-		return fmt.Errorf("secretkey bad length: %d != %d", len(secretKey), C.crypto_box_SECRETKEYBYTES)
+	ring := &Keyring{keys: make(map[[64]byte][]byte, len(secretKeys))}
+	for _, secret := range secretKeys {
+		public, err := BoxPublicKey(secret)
+		if err != nil {
+			return nil, err
+		}
+		fingerprint := blake2b.Sum512(public)
+		if _, ok := ring.keys[fingerprint]; ok {
+			return nil, fmt.Errorf("duplicate secret key identity")
+		}
+		ring.keys[fingerprint] = bytes.Clone(secret)
+	}
+	return ring, nil
+}
+
+func (chains KeyChains) Keyring() (*Keyring, error) {
+	if err := chains.validate(); err != nil {
+		return nil, err
+	}
+	var keys [][]byte
+	for _, chain := range chains {
+		keys = append(keys, chain...)
+	}
+	return NewKeyring(keys)
+}
+
+// BoxPublicKey derives the existing crypto_box public identity from its secret.
+func BoxPublicKey(secret []byte) ([]byte, error) {
+	if !initDone {
+		return nil, fmt.Errorf("forgot to init sodium")
+	}
+	if len(secret) != C.crypto_box_SECRETKEYBYTES {
+		return nil, fmt.Errorf("secretkey bad length: %d != %d", len(secret), C.crypto_box_SECRETKEYBYTES)
+	}
+	public := make([]byte, C.crypto_box_PUBLICKEYBYTES)
+	if C.crypto_scalarmult_base((*C.uchar)(&public[0]), (*C.uchar)(&secret[0])) != 0 {
+		return nil, fmt.Errorf("failed to derive public key")
+	}
+	return public, nil
+}
+
+func (ring *Keyring) Decrypt(cipherText io.Reader, plainText io.Writer) error {
+	if ring == nil || len(ring.keys) == 0 {
+		return fmt.Errorf("secret keyring is empty")
 	}
 	size := make([]byte, 4)
 	_, err := io.ReadFull(cipherText, size)
@@ -285,16 +331,7 @@ func StreamDecryptRecipients(secretKey []byte, cipherText io.Reader, plainText i
 	if numRecipients == 0 || numRecipients > maxStreamRecipients {
 		return fmt.Errorf("bad stream recipient count: %d not in [1, %d]", numRecipients, maxStreamRecipients)
 	}
-	publicKey := make([]byte, len(secretKey))
-	res := int(C.crypto_scalarmult_base(
-		(*C.uchar)(&publicKey[0]),
-		(*C.uchar)(&secretKey[0]),
-	))
-	if res != 0 {
-		return fmt.Errorf("failed to derive publickey from secretkey: %d", res)
-	}
-	publicKeyHash := blake2b.Sum512(publicKey)
-	expectedRecipientRecordSize := uint32(len(publicKeyHash)) + uint32(C.crypto_box_SEALBYTES) + uint32(C.crypto_secretstream_xchacha20poly1305_KEYBYTES)
+	expectedRecipientRecordSize := uint32(64 + C.crypto_box_SEALBYTES + C.crypto_secretstream_xchacha20poly1305_KEYBYTES)
 	var key []byte
 	for i := 0; i < int(numRecipients); i++ {
 		size := make([]byte, 4)
@@ -311,9 +348,9 @@ func StreamDecryptRecipients(secretKey []byte, cipherText io.Reader, plainText i
 		if err != nil {
 			return fmt.Errorf("failed to read bytes for cipher text: %w", err)
 		}
-		recipientPublicKeyHash := keyCipherText[:len(publicKeyHash)]
-		keyCipherText = keyCipherText[len(publicKeyHash):]
-		if bytes.Equal(publicKeyHash[:], recipientPublicKeyHash) {
+		recipientPublicKeyHash := [64]byte(keyCipherText[:64])
+		keyCipherText = keyCipherText[64:]
+		if secretKey, ok := ring.keys[recipientPublicKeyHash]; ok {
 			key, err = BoxSealedDecrypt(keyCipherText, secretKey)
 			if err != nil {
 				return err

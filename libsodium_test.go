@@ -328,31 +328,21 @@ func TestStreamEncryptRecipientsRejectsLocalValidationErrorsWithoutWriting(t *te
 	}
 }
 
-func TestStreamDecryptRecipientsRejectsMissingInitWithoutReading(t *testing.T) {
+func TestKeyringRejectsMissingInit(t *testing.T) {
 	Init()
 	_, sk, err := BoxKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	oldInitDone := initDone
+	old := initDone
 	initDone = false
-	defer func() { initDone = oldInitDone }()
-
-	reader := &payloadRejectingReader{}
-	err = StreamDecryptRecipients(sk, reader, io.Discard)
-	if err == nil {
-		t.Fatal("should have failed")
-	}
-	if !strings.Contains(err.Error(), "forgot to init sodium") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if reader.payloadRead {
-		t.Fatal("read cipher text before rejecting missing init")
+	defer func() { initDone = old }()
+	if _, err := NewKeyring([][]byte{sk}); err == nil || !strings.Contains(err.Error(), "forgot to init sodium") {
+		t.Fatalf("missing init: %v", err)
 	}
 }
 
-func TestStreamDecryptRecipientsRejectsInvalidRecipientMetadata(t *testing.T) {
+func TestKeyringRejectsInvalidRecipientMetadata(t *testing.T) {
 	Init()
 	pk, sk, err := BoxKeypair()
 	if err != nil {
@@ -406,7 +396,11 @@ func TestStreamDecryptRecipientsRejectsInvalidRecipientMetadata(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			reader := &payloadRejectingReader{data: append([]byte(nil), test.input...)}
 
-			err := StreamDecryptRecipients(sk, reader, io.Discard)
+			ring, err := NewKeyring([][]byte{sk})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = ring.Decrypt(reader, io.Discard)
 			if err == nil {
 				t.Fatal("should have failed")
 			}
@@ -438,7 +432,11 @@ func TestStreamRecipients(t *testing.T) {
 		t.Fatal(err)
 	}
 	var plain bytes.Buffer
-	err = StreamDecryptRecipients(sk1, bytes.NewReader(cipher.Bytes()), &plain)
+	ring1, err := NewKeyring([][]byte{sk1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ring1.Decrypt(bytes.NewReader(cipher.Bytes()), &plain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +444,11 @@ func TestStreamRecipients(t *testing.T) {
 		t.Fatal("sk1 failed")
 	}
 	plain.Reset()
-	err = StreamDecryptRecipients(sk2, bytes.NewReader(cipher.Bytes()), &plain)
+	ring2, err := NewKeyring([][]byte{sk2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ring2.Decrypt(bytes.NewReader(cipher.Bytes()), &plain)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,13 +457,17 @@ func TestStreamRecipients(t *testing.T) {
 	}
 	bitflipCipher := append([]byte{}, cipher.Bytes()...)
 	bitflipCipher[len(bitflipCipher)/2]++
-	err = StreamDecryptRecipients(sk2, bytes.NewReader(bitflipCipher), &plain)
+	err = ring2.Decrypt(bytes.NewReader(bitflipCipher), &plain)
 	if err == nil {
 		t.Fatal("should have failed")
 	}
 	bitflipKey := append([]byte{}, sk2...)
 	bitflipKey[len(bitflipKey)/2]++
-	err = StreamDecryptRecipients(bitflipKey, bytes.NewReader(cipher.Bytes()), &plain)
+	wrongRing, err := NewKeyring([][]byte{bitflipKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = wrongRing.Decrypt(bytes.NewReader(cipher.Bytes()), &plain)
 	if err == nil {
 		t.Fatal("should have failed")
 	}
