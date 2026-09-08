@@ -22,7 +22,7 @@ const (
 // ParseKeyChains reads lowercase hex generations separated by colons and
 // recipient rows separated by LF. Row order is insignificant and preserved;
 // generations remain oldest first. Blank lines and a missing final LF are allowed.
-// Empty input is valid local preparation; encryption still requires recipients.
+// Empty input is accepted; encryption still requires recipients.
 func ParseKeyChains(input io.Reader) (KeyChains, error) {
 	r := &io.LimitedReader{R: input, N: MaxKeyChainsBytes + 1}
 	scanner := bufio.NewScanner(r)
