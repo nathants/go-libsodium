@@ -311,10 +311,10 @@ func TestStreamEncryptRecipientsRejectsLocalValidationErrorsWithoutWriting(t *te
 		t.Fatalf("wrote %d bytes before rejecting invalid chunk size", invalidChunkCipher.Len())
 	}
 
-	oldInitDone := initDone
-	defer func() { initDone = oldInitDone }()
+	oldInitDone := initDone.Load()
+	defer func() { initDone.Store(oldInitDone) }()
 	StreamChunkSize = oldChunkSize
-	initDone = false
+	initDone.Store(false)
 	var notInitializedCipher bytes.Buffer
 	err = StreamEncryptRecipients([][]byte{pk}, bytes.NewReader(nil), &notInitializedCipher)
 	if err == nil {
@@ -334,9 +334,8 @@ func TestKeyringRejectsMissingInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := initDone
-	initDone = false
-	defer func() { initDone = old }()
+	old := initDone.Swap(false)
+	defer func() { initDone.Store(old) }()
 	if _, err := NewKeyring([][]byte{sk}); err == nil || !strings.Contains(err.Error(), "forgot to init sodium") {
 		t.Fatalf("missing init: %v", err)
 	}

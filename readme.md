@@ -70,6 +70,12 @@ go get github.com/nathants/go-libsodium
 
 ## Usage
 
+Call `Init()` before cryptographic operations. Concurrent calls are safe and wait
+for one native initialization; native "already initialized" is also success.
+Native initialization failure remains a panic for every caller, and cryptographic
+operations still reject use before initialization. Configure `StreamChunkSize`
+before starting concurrent stream operations; concurrent mutation is unsupported.
+
 ```go
 package main
 

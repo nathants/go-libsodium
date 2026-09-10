@@ -11,6 +11,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/crypto/blake2b"
@@ -23,7 +25,15 @@ const (
 
 var (
 	StreamChunkSize = 1024 * 1024
-	initDone        = false
+	initDone        atomic.Bool
+	initializeOnce  = sync.OnceFunc(func() {
+		// Native success is 0 for first initialization and 1 when another
+		// native user initialized sodium first. Only a negative result fails.
+		if C.sodium_init() < 0 {
+			panic("failed to init sodium")
+		}
+		initDone.Store(true)
+	})
 )
 
 func validateStreamChunkSize(chunkSize int) error {
@@ -47,18 +57,14 @@ func writeFull(w io.Writer, buf []byte) error {
 	return nil
 }
 
+// Init initializes native sodium once and waits for concurrent callers. A native
+// failure is replayed to every caller; cryptographic APIs remain unavailable.
 func Init() {
-	if initDone {
-		return
-	}
-	if int(C.sodium_init()) != 0 {
-		panic("failed to init sodium")
-	}
-	initDone = true
+	initializeOnce()
 }
 
 func StreamKeygen() (key []byte, err error) {
-	if !initDone {
+	if !initDone.Load() {
 		return nil, fmt.Errorf("forgot to init sodium")
 	}
 	key = make([]byte, C.crypto_secretstream_xchacha20poly1305_KEYBYTES)
@@ -67,7 +73,7 @@ func StreamKeygen() (key []byte, err error) {
 }
 
 func validateStreamEncrypt(key []byte, chunkSize int) (int, error) {
-	if !initDone {
+	if !initDone.Load() {
 		return 0, fmt.Errorf("forgot to init sodium")
 	}
 	if len(key) != C.crypto_secretstream_xchacha20poly1305_KEYBYTES {
@@ -147,7 +153,7 @@ func streamEncrypt(key []byte, streamChunkSize int, plainText io.Reader, cipherT
 }
 
 func StreamDecrypt(key []byte, cipherText io.Reader, plainText io.Writer) error {
-	if !initDone {
+	if !initDone.Load() {
 		panic("forgot to init sodium")
 	}
 	if len(key) != C.crypto_secretstream_xchacha20poly1305_KEYBYTES {
@@ -252,7 +258,7 @@ func StreamEncryptRecipients(publicKeys [][]byte, plainText io.Reader, cipherTex
 }
 
 func validateStreamEncryptRecipients(publicKeys [][]byte, chunkSize int) (int, error) {
-	if !initDone {
+	if !initDone.Load() {
 		return 0, fmt.Errorf("forgot to init sodium")
 	}
 	if len(publicKeys) == 0 || len(publicKeys) > maxStreamRecipients {
@@ -305,7 +311,7 @@ func (chains KeyChains) Keyring() (*Keyring, error) {
 
 // BoxPublicKey derives the existing crypto_box public identity from its secret.
 func BoxPublicKey(secret []byte) ([]byte, error) {
-	if !initDone {
+	if !initDone.Load() {
 		return nil, fmt.Errorf("forgot to init sodium")
 	}
 	if len(secret) != C.crypto_box_SECRETKEYBYTES {
@@ -364,7 +370,7 @@ func (ring *Keyring) Decrypt(cipherText io.Reader, plainText io.Writer) error {
 }
 
 func BoxKeypair() (publicKey, secretKey []byte, err error) {
-	if !initDone {
+	if !initDone.Load() {
 		return nil, nil, fmt.Errorf("forgot to init sodium")
 	}
 	publicKey = make([]byte, C.crypto_box_PUBLICKEYBYTES)
@@ -377,7 +383,7 @@ func BoxKeypair() (publicKey, secretKey []byte, err error) {
 }
 
 func BoxSealedEncrypt(plainText, recipientPublicKey []byte) (cipherText []byte, err error) {
-	if !initDone {
+	if !initDone.Load() {
 		return nil, fmt.Errorf("forgot to init sodium")
 	}
 	if len(recipientPublicKey) != C.crypto_box_PUBLICKEYBYTES {
@@ -402,7 +408,7 @@ func BoxSealedEncrypt(plainText, recipientPublicKey []byte) (cipherText []byte, 
 }
 
 func BoxSealedDecrypt(cipherText, recipientSecretKey []byte) (plainText []byte, err error) {
-	if !initDone {
+	if !initDone.Load() {
 		return nil, fmt.Errorf("forgot to init sodium")
 	}
 	if len(recipientSecretKey) != C.crypto_box_SECRETKEYBYTES {
@@ -439,7 +445,7 @@ func BoxSealedDecrypt(cipherText, recipientSecretKey []byte) (plainText []byte, 
 }
 
 func BoxEasyEncrypt(plainText, recipientPublicKey, senderSecretKey []byte) (cipherText []byte, err error) {
-	if !initDone {
+	if !initDone.Load() {
 		return nil, fmt.Errorf("forgot to init sodium")
 	}
 	if len(recipientPublicKey) != C.crypto_box_PUBLICKEYBYTES {
@@ -473,7 +479,7 @@ func BoxEasyEncrypt(plainText, recipientPublicKey, senderSecretKey []byte) (ciph
 }
 
 func BoxEasyDecrypt(cipherText, senderPublicKey, recipientSecretKey []byte) (plainText []byte, err error) {
-	if !initDone {
+	if !initDone.Load() {
 		return nil, fmt.Errorf("forgot to init sodium")
 	}
 	if len(senderPublicKey) != C.crypto_box_PUBLICKEYBYTES {
@@ -507,7 +513,7 @@ func BoxEasyDecrypt(cipherText, senderPublicKey, recipientSecretKey []byte) (pla
 }
 
 func SignKeypair() (publicKey, secretKey []byte, err error) {
-	if !initDone {
+	if !initDone.Load() {
 		return nil, nil, fmt.Errorf("forgot to init sodium")
 	}
 	publicKey = make([]byte, C.crypto_sign_PUBLICKEYBYTES)
@@ -520,7 +526,7 @@ func SignKeypair() (publicKey, secretKey []byte, err error) {
 }
 
 func Sign(plainText, signerSecretKey []byte) (signedText []byte, err error) {
-	if !initDone {
+	if !initDone.Load() {
 		return nil, fmt.Errorf("forgot to init sodium")
 	}
 	if len(signerSecretKey) != C.crypto_sign_SECRETKEYBYTES {
@@ -546,7 +552,7 @@ func Sign(plainText, signerSecretKey []byte) (signedText []byte, err error) {
 }
 
 func SignVerify(signedText, plainText, signerPublicKey []byte) error {
-	if !initDone {
+	if !initDone.Load() {
 		return fmt.Errorf("forgot to init sodium")
 	}
 	if len(signerPublicKey) != C.crypto_sign_PUBLICKEYBYTES {
