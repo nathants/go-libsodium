@@ -18,7 +18,8 @@ ciphertext format or make arbitrary shared-buffer/configuration mutations safe.
 ## Validation
 
 Run `GOTOOLCHAIN=local bash bin/check.sh`, `go test -cover ./...`, and
-`go test -race ./...`. Check that the script's tools are installed first: it
-otherwise runs unpinned `go install` commands. Initialization regressions use
-fresh processes; the native-prior-initialization fixture builds against the
-installed libsodium without modifying or replacing it.
+`go test -race ./...`. All nine Go analysis tools listed in the script's
+prerequisite loop must already be on PATH; it fails before checks when any is
+missing and never installs tools. Initialization regressions use fresh processes;
+the native-prior-initialization fixture builds against the installed libsodium
+without modifying or replacing it.
