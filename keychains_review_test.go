@@ -51,7 +51,7 @@ func TestRotationOwnsHistoricalBuffers(t *testing.T) {
 
 func distinctChains(count, perRow int) KeyChains {
 	var result KeyChains
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if i%perRow == 0 {
 			result = append(result, nil)
 		}

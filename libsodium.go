@@ -110,11 +110,11 @@ func streamEncrypt(key []byte, streamChunkSize int, plainText io.Reader, cipherT
 	}
 	plainChunk := make([]byte, streamChunkSize)
 	for {
-		plainChunkSize, err := plainText.Read(plainChunk)
+		plainChunkSize, readErr := plainText.Read(plainChunk)
 		tag := 0
-		if err != nil {
-			if err != io.EOF {
-				return fmt.Errorf("failed to read plain text: %w", err)
+		if readErr != nil {
+			if readErr != io.EOF {
+				return fmt.Errorf("failed to read plain text: %w", readErr)
 			}
 			tag = int(C.crypto_secretstream_xchacha20poly1305_TAG_FINAL)
 		}
@@ -199,7 +199,7 @@ func StreamDecrypt(key []byte, cipherText io.Reader, plainText io.Writer) error 
 		}
 		res := int(C.crypto_secretstream_xchacha20poly1305_pull(
 			&state,
-			(*C.uchar)(plainChunkPointer),
+			plainChunkPointer,
 			(*C.ulonglong)(&plainChunkSize),
 			&tag,
 			(*C.uchar)(&cipherChunk[0]),

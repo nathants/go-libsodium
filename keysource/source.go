@@ -114,8 +114,7 @@ func commandOutput(ctx context.Context, command string, args []string) (result s
 		return "", fmt.Errorf("secret command output pipes remained open after exit")
 	}
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			return "", fmt.Errorf("secret command failed with exit status %d (output withheld)", exit.ExitCode())
 		}
 		// Start errors can contain the executable path; never expose it.
