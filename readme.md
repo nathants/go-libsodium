@@ -252,7 +252,8 @@ This is not a process sandbox or a guarantee of cleanup after SIGKILL.
 
 ## Tests
 
-Requires Python 3.8+ for executable/terminal tests.
+Requires Python 3.8+ for executable/terminal tests, and
+[libcheck](https://github.com/nathants/libcheck) for `bin/check.sh`.
 
 ```sh
 bash bin/check.sh
